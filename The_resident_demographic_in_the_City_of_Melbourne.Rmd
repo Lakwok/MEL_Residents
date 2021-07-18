@@ -1,0 +1,493 @@
+---
+title: "The resident demographic in the City of Melbourne"
+output: 
+  flexdashboard::flex_dashboard:
+  vertical_layout: scroll
+ 
+author: "Liguo Bao" 
+---
+```{r pkgs, echo = FALSE}
+library(knitr)
+library(here)
+library(broom)
+library(readr)
+library(tidyverse)
+library(extrafont)
+library(ggplot2)
+library(ggthemes)
+library(treemapify)
+library(plotly)
+library(flexdashboard)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE)
+```
+
+```{r read_data}
+raw_residents <- read_csv(here::here("data/Residents_Profiles_by_CLUE_Small_Area.csv"))
+COM <- c("Carlton", "Docklands","East Melbourne", "Kensington", "Melbourne (CBD)", "North Melbourne", "Parkville","South Yarra (inc. Melbourne Remainder)","Southbank","West Melbourne (Residential)") 
+#For covenience, we pass the ten suburbs of City of Melbourne to the'COM'.
+```
+
+Tidy data
+========================================================================================================
+
+### **About the data**
+
+* This data is called Residents Profile downloading on the website of the council of City of Melbourne, which covers 7 topics: the age and gender, economy, income, employment, education, housing and dwellings. The objective of this data is the residents living in the ten suburbs of City of Melbouren in the 2011 and 2016 censuses year. Under these seven topics, each topic covers several small topics, namely variables. These large numbers of variables are included in one column 'category', and continue to be classified as column 'sub_category'.In order to make the data easier for us to use, we tidy the data according to the questions we interested in.    
+
+* In order to clean up the data, we first filter out the topics we are interested in from the original data, and then start from answering the project questions, filter the data related to the questions again, and transform its format into a format that is easy to use later. In the data cleaning part, most of the data sets that need to be used later have been cleaned up and can be used directly in the analysis.
+```{r data_clean, echo = TRUE}
+key_group_pop <- raw_residents %>% 
+  filter(category == "Age - key groups") %>% 
+  pivot_wider(names_from = sub_category, values_from = value) %>%
+  rename(Children =  starts_with("Children"), Youth = starts_with("Youth"), Adult =  starts_with("Adult"), Older = starts_with("Older")) %>%
+  mutate(Population = (sum = rowSums(.[6:9]))) # Tidy ket groups and calculate population
+
+age_group_pop <- raw_residents %>%
+  filter(category %in% c("Age - key groups","Age - 5 year groups","Language spoken at home - detailed","Age - median")) %>%
+   mutate(sub_category = str_replace_all(sub_category,c(" years" = "","0-11" = "", "12-25" = "", "26-59"= "", " "="","[()]"= "","60andover" = ""	) )) # A big dataset focusing on age
+
+pivot_clean <- function(data,x){
+  data %>% filter(category %in% c(x)) %>%
+  mutate(subcategory_modified = fct_relevel(sub_category,unique(sub_category))) %>%
+  pivot_wider(names_from = category, values_from = subcategory_modified) # create clean function for following tidy process
+}
+
+year_group<-age_group_pop %>%
+  pivot_clean("Age - 5 year groups") %>%
+  rename(year_group = "Age - 5 year groups", year_person = "value") # focusing on detail age data using 5 years as unit
+
+key_group<- age_group_pop %>%
+  pivot_clean("Age - key groups") %>%
+  rename(key_group = "Age - key groups", key_person = "value") # focusing on four key age group
+
+language <- age_group_pop %>%
+  pivot_clean("Language spoken at home - detailed") %>%
+  rename(language = "Language spoken at home - detailed", language_person = "value") %>%
+  filter(!str_detect(language, "Englishonly|Other|Speak|notstated"), year == "2016", geography == "City of Melbourne" ) %>%
+  mutate(language = str_remove_all(language,c("ChineseLanguages-" = "", "IndoAryanLanguages-" = "", "SoutheastAsianAustronesianLanguages-" = "","excludingDari" = "", "AustralianIndigenousLanguages" = "AIL" ) )) # extrat out the language residents speak besides English and tidy format of value
+
+age_median<- age_group_pop %>%
+  pivot_clean("Age - median") %>%
+  rename(age_median = "value") %>%
+  select(geography,year,age_median) # foucusing on aged median
+
+edu<- raw_residents %>%
+  pivot_clean("Education institution type attending - overview") %>%
+  rename(education_type = "Education institution type attending - overview") %>%
+  filter(!str_detect(education_type,"Other type of Educational Institution|Type of Educational Institution not stated") ) # This edu focusing on the number of student 
+
+edu_level<- raw_residents %>%
+  pivot_clean("Non-school qualification: level of education - overview") %>%
+  rename(education_level = "Non-school qualification: level of education - overview") %>%
+  filter(!str_detect(education_level, "Level of education inadequately described|Level of education not stated") ) %>%
+  select(geography,year, value,education_level) %>%
+  mutate(education_level = str_remove_all(education_level, c(" " = "_"))) %>%
+  pivot_wider(names_from = education_level, values_from = value) #edu_level foucsing on the numbers of people who have different education level
+
+ocp<- raw_residents %>%
+  pivot_clean("Occupation") %>%
+  filter(Occupation != "Inadequately described/Not stated")
+
+ocp_model<- ocp %>%
+  mutate(Occupation = str_remove_all(Occupation, c(" " = "_"))) %>%
+  select(geography, value, year, Occupation) %>%
+  pivot_wider(names_from = Occupation, values_from = value) # tidy occupation data for modeling
+
+eco<- raw_residents %>%
+  pivot_clean("Personal income - median") %>%
+  rename(median_income = "value") %>%
+  select(geography,year,median_income) # focusing on median income 
+
+rent<- raw_residents %>%
+  pivot_clean("Housing rental weekly payments - overview") %>%
+  rename(rental_payment = "Housing rental weekly payments - overview") %>%
+  filter(rental_payment != "Rent not stated") %>%
+  mutate(rental_payment = str_remove_all(rental_payment, c("\\$" = "", " "= "","andover" = ""))) # focusing on rent and tidy format, which ready for using 
+
+```
+
+Population
+=================================================================================================================================================
+
+Column {data-width=300}
+--------------------------------------------------------------------------------------------------------------------
+
+### **Summary**
+
+* First of all, we like to look at the population of each Suburbs of the City of Melbourne, and what is the difference between 2011 and 2016. This chart describes the population comparison of 10 suburbs of the City of Melbourne, as well as the changes between 2016 and 2011.  
+
+* Compared with 2011, most suburbs show a trend of population growth, especially __*Melbourne CBD*__ has become the one with the largest population growth(From 20,117 to 36,909 persons). However, __*East Melbourne*__ and __*South Yarra*__ are the only two areas with population decline.
+
+Column {data-width=600}
+--------------------------------------------------------------------------
+### Population comparison between 2011 and 2016 census 
+```{r population_compare}
+key_group_plot<-key_group_pop %>%
+  filter(geography %in% c (COM)) %>%
+  ggplot(aes(x = Population, y = reorder(geography,Population), fill = factor(year))) +
+  geom_col(position = "dodge") +
+  labs(y = "Suburbs")+
+  scale_fill_brewer(name = "Year",palette="Dark2")+
+  theme_tufte()
+  
+ggplotly(key_group_plot)
+```
+
+Age
+===========================================================================
+
+Column {data-width=300}
+--------------------------------------------------------------------------------------------------------------------
+
+### **Summary**
+
+__Key Age Group Comparison__  
+
+* For this part, let's turn to the topic Age. For the age, we want to compare the differences between the City of Melbourne and Greater Melbourne in terms of age groups from a macro perspective, so we calculated the percentagen of each four key age groups in the total population, and we also added the factors of census years. For the group Children, it refers to the residents aged 0-11, the Youth refers to the residents aged 12-25, the Adult refers to the residents aged 26-59, and the Older refers to the residents aged 60 and over.  
+
+* The percent of each age groups of two regions have not changed much in different years, it is worth noting the different proportion of differences between age groups. The proportion of adults is the largest in both regions, where it approximately occupies 50% of the population.The proportion of Youth in the City of Melbourne(Aprox 30% in 2016) is slightly higher than Greater Melbourne(Aprox 18% in 2016). The proportion of Older and children in the City of Melbourne(Aprox 10% and 5% in 2016) is far lower than Greater Melbourne(Aprox 20% and 15% in 2015).
+
+__Percentage change by groups__  
+
+* Perhaps the proportion of each age group and the comparison between years are not very good at perceiving the difference of change. This figure shows the percentage change of each age groups from 2011 to 2016 in the City of Melbourne and Greater Melbourne.  
+
+* Obiviously, the population growth in the City of Melbourne in all age groups is much greater than in Greatert Melbourne. The largest growth rate was in the Youth, which grew 54% compared to 2011 in 2016, while the change in Greater Melbourne was only 8%. The second is the Adult, which has reached a growth rate of 42%, and the Greater Melbourne is only 11%. Then, the growth rates of Children and Older were 36% and 35%, respectively, and 12% and 16% for Greater Melbourne. For the City of Melbourne, the growth rate of any age group is amazing. The desire for living in the city has not abated and become more and more intense. We are also very looking forward to the 2021 census. How much more will this percentage rise?  
+
+__Population pyramid__  
+
+* In order to better understand the age difference between the City of Melbourne and Greater Melbourne, we utilize the data of five-year age groups, and build a population pyramid(Census 2016). The y-axis is the age group, and the x-axis is the proportion of the population of each age group in the total population in their regions, which more intuitively reflects the population age difference between the two regions.  
+
+* Like most of the population pyramids, these two regions show a narrow shape at both ends and a wider shape in the middle but the most striking part is the age group of 20-24. Greater Melbourne accounts for about 7% in this age group, while the City of Melbourne accounts for over three times of it. In the 25-29, 30-34 groups, the proportion of City of Melbourne is twice as much as Greater Melbourne. This also makes percentage of the City of Melbourne in other age groups is basically smaller than Greater Melbourne. The proportion of youth age groups in Melbourne is incredible, we think it not only reflects that the City of Melbourne is a very dynamic regions, but also reflects that a large number of young people want to find their own place in where full of opportunities.  
+
+__Age pattern inside__  
+
+* Finally, let's go back to the City of Melbourne and see how age pattern in each suburbs is different. In this task, we also use the data of five years group, and compare the differences between 2011 and 2016. We have found that the City of Melbourne is a place where most young people live, but when we analyze each suburbs inside it, we find that the age pattern of each suburbs is very different. This 100% chart covers a lot of content. First of all, we distinguish each suburbs by color. The y-axis is the proportion, and the x-axis is the age group. The observation process of this diagram is intersting. Starting from each age group of x-axis, looking from the bottom to the top, by observing the area size of different color blocks, we can know the population difference between different suburbs in this age group. Then we start from Y-axis and observe how the area of a single color block changes from left to right. We can know the distribution of age pattern in this suburb compared to others. Finally, by comparing the different shapes of different color blocks from left to right, We can know the trend of population proportion changing with age in each suburbs and how it differs among others.  
+
+* In this 100% chart, in addition to recognizing the different basic information of population proportion in each suburbs, let's pay attention to the shape of different suburbs. Let's take a look at the color blocks of Melbourne CBD, Parkville and South Yarra from left to right. Melbourne CBD has the largest population in the age group of 15-34, because its color block is the widest in this section, and then its shape gradually shrinks until it disappears, which means that the population in the elderly group is very small in Melbourne CBD. However, the shapes of the two color blocks of Parkville and South Yarra are opposite. Before the age of 55, the shape of the two color blocks is very narrow, which means that the proportion of the population is very small. However, after the age of 55, the two color blocks start to suddenly widen, which means that the elderly mainly livining in this two suburbs of the City of Melbourne. Compared with the patterns of 2011 and 2016, the age distribution of the City of Melbourne has not changed much. It is worth noting that in the 2016 census, Southbank, Parkville, South Yarra, North Melbourne and South Melbourne have residents over 100 years old, which may be a good place for the retirement.
+
+Column {.tabset data-width=600}
+-------------------------------------
+
+### Key Age Group Comparison
+
+```{r key_age_group_change}
+age_group_chg<- key_group %>%
+  filter(geography %in% c("City of Melbourne", "Greater Melbourne")) %>%
+  group_by(year, geography) %>% 
+  mutate(percent = key_person / sum(key_person) * 100) %>% # Calculate the percet of each key groups
+  group_by(key_group,geography) %>% 
+  arrange(year, .by_group = TRUE) %>%
+  mutate(pct_change = (key_person/lag(key_person) - 1) * 100) # Calculate how those percent change over years
+
+age_chg_p1<- age_group_chg %>%
+  ggplot(aes(x = percent, y = reorder(key_group,percent), fill = factor(year))) +
+  geom_col() +
+  scale_fill_brewer( palette = "Dark2") +
+  facet_grid(~ geography) +
+  labs(y = "Age groups", title = "Key Age Group Comparison", fill = "Year") +
+  theme(plot.title = element_text(size=25,lineheight=.8, vjust=1,family="EB Garamond 12")) +
+  theme_tufte()
+ggplotly(age_chg_p1)
+
+```
+
+### Percentage Change
+
+```{r age_chg2}
+age_chg_p2<-age_group_chg %>%
+  ggplot(aes(x = key_group, y = pct_change, fill = geography)) +
+  geom_col(position = "dodge", na.rm = TRUE) +
+  scale_fill_brewer(name = "Region", palette = "Dark2") +
+  labs(y = "Percentage Change", x = "Age Groups", title = "Percentage change by age groups in the \nCity of Melbourne and Greater Melbourne", subtitle = "(2011-2016)") +
+  theme(plot.title = element_text(size=15,lineheight=.8, vjust=1,family="EB Garamond 12")) +
+  theme_tufte()
+ggplotly(age_chg_p2)
+```
+
+### Population Pyramid
+
+```{r specific_change,fig.width=10}
+year_group_pct<- year_group %>%
+   filter(geography %in% c("City of Melbourne", "Greater Melbourne"), year =="2016") %>%
+   group_by(year, geography) %>% 
+   mutate(percent = year_person / sum(year_person) * 100) 
+
+
+year_group_pyramid<-year_group_pct %>%
+   ggplot(aes(x = year_group, y = percent, fill = factor(geography))) +
+   geom_bar(data = subset(year_group_pct,geography == "City of Melbourne"), stat = "identity") + # Plot bar for COM
+   geom_bar(data = subset(year_group_pct,geography == "Greater Melbourne"),aes(y=percent*(-1)),stat = "identity")  + # Plot bar for GM and *-1 for showing on the left
+   scale_y_continuous(breaks = seq(-21, 21, 7), labels = abs(seq(-21, 21, 7))) + # Modify the x-axis for population pyramid
+   coord_flip() +
+   theme_tufte()+
+   scale_fill_brewer(name = "Region",palette = "Dark2")  +
+   labs(y = "Percentage", x = "Age range", title = "Population Pyramid", caption = "Census 2016"  ) +
+   theme(plot.title = element_text(size=16,lineheight=.8,family="EB Garamond 12"))
+
+ggplotly(year_group_pyramid)
+
+```
+
+### Age Pattern Inside
+
+```{r resident_distribution, fig.width=23, fig.height=20}
+age_group_dis<- year_group %>%
+   filter(geography %in% c(COM) ) 
+  
+age_dis_p<-age_group_dis %>%
+   ggplot(aes(x = year_group, y = year_person, fill = factor(geography)),na.rm = TRUE)+
+   geom_bar(stat = "identity", position = "fill", na.rm = TRUE) +
+   scale_fill_brewer(palette="Paired") +
+   facet_grid(~year) +
+   labs(y = "Proportion", x = "Age Range",title = "Population patterns across the City of Melbourne", fill = "Suburbs") +
+   theme(plot.title = element_text(size=40,lineheight=.8, vjust=1,family="EB Garamond 12"),
+         legend.text = element_text(size = 23, family="EB Garamond 12"),
+         legend.title = element_text(size = 30,family="EB Garamond 12"),
+         legend.position = "bottom") 
+  
+age_dis_p
+```
+
+
+Language
+================================================================================================================================================
+
+### **What languages the residents of City of Melbourne speak at home besides English?**
+
+We've explored some demographic features in the City of Melbourne. Melbourne is a multicultural city. No matter where you come from, you may find your own culture here. Language may be a major feature of cultural diversity. We are very curious about what languages the residents of City of Melbourne would speak at home besides official language.  
+```{r language, results="hide"}
+language %>%  
+  select(language, language_person) %>% 
+  arrange(-language_person) 
+
+```
+
+```{r language_plot, fig.width= 35, fig.height= 15.5}
+language_p<- language %>%
+  ggplot(aes(area = language_person, fill = language, label = language)) +
+  geom_treemap(show.legend = FALSE)+  # library package "treemapify" for constructing treemap in th ggplot2
+  geom_treemap_text(family = "Junicode", colour = "white", place = "centre", 
+                    size = 80) +
+  labs(caption = " AIL = Australian Indigenous Languages     Census 2016")+
+  theme(plot.title = element_text(size=50,lineheight=.8, vjust=1,family="EB Garamond 12"),
+        plot.caption = element_text(size = 20))
+language_p
+
+```
+
+Language Summary {.hidden}
+========================================================================================================
+### Summary  
+* This tree chart is also very interesting. In this picture, there are 33 languages, which represent what other languages residents in the City of Melbourne would speak at home besides English. In fact, there are more than 33 languages. Because some other languages are inadequately stated in the data, we could not include them in this diagram. If it doesn't include the language you speak at home and you also living in the City of Melbourne in 2016, we appologize for this issue. In this tree map, we use color to distinguish each language, and the size of the color block represents the number of people who speak the language.(Data as of 2016)  
+
+* Obviously, Melbourne is a multicultural city. In addition to Mandarin, which has the largest color block area, it means that Mandarin has the largest person in these 33 languages. I also hope that people can pay attention to the smallest part of the image. That is, AIL means the Australian Indigonous Languages. According to the 2016 census, only six people in the City of Melbourne speak Australian Indigonous Languages. I don't want this small part to be ignored  because I believe that every culture should be respected.
+
+
+
+
+Student
+===================================================================================================================================================
+
+Column {data-width=300}
+--------------------------------------------------------------------------------------------------------------------
+
+### **Summary**  
+
+* Further, in education, we want to know the distribution of students of different education types, and find out which region has the most university students.We divide education types into Primary, Pre-school, Secondary, Techinical or Further Educational Insititution and University or orther Tertiary Institution and construct a 100% chart to compare the number of students in each suburbs in 2016.  
+
+* From the figure, no matter which suburb, the student of tertiary education has the largest proportion. The Melbourne CBD is where the most university student live in, while East Melbourne only has 425 students studying in University of other Teritiary Insititutions in 2016.
+
+Column { data-width=600}
+-------------------------------------
+
+### Distribution of education types of students across the City of Melbourne  
+
+```{r edu,fig.width= 10, fig.height= 6}
+edu_dis_p<-edu %>%
+  filter(geography %in% c(COM), year == "2016") %>%
+  mutate(education_type = case_when(education_type == "Technical or Further Educational Institution"~ "Technical or Further\n Educational Institution", education_type == "Pre-school" ~ "Pre-school", education_type == "Infants/Primary" ~ "Infants/Primary", education_type == "Secondary" ~ "Secondary", education_type == "University or other Tertiary Institution" ~ "University or other\n Tertiary Institution")) %>% # Using case_when for adjusting legend text format under theme_economist
+  ggplot(aes(x = geography, y = value, fill = education_type)) +
+  geom_col(position = "fill") +
+  coord_flip() +
+  scale_fill_brewer( palette = "RdBu") +
+  theme_economist()+
+  theme(legend.text = element_text(size = 7),
+        legend.title = element_blank(),
+        axis.text.y=element_text(size=10,hjust=0.95,vjust=0.2))+
+  guides(fill = FALSE)
+
+ggplotly(edu_dis_p)
+      
+```
+
+Occupation
+==========================
+
+Column {data-width=300}
+--------------------------------------------------------------------------------------------------------------------
+
+### **Summary**  
+
+* In this part, we want to know about the composition of occupations in the City of Melbourne, which are the main occupations, and have a look whether the situation in CBD will be different.  
+
+* It can be recognized from the figure that the majority type of occupation in the City of Melbourne is __*Professionals*__, which is more than twice higher than the second ranked occupation Manager, and the least occupation type is __*Machinery operators and drivers*__. Professionals is also the major occupation in Melbourne CBD, and the distribution of occupation types in these two regions is very similar.
+
+
+Column {data-width=600}
+-------------------------------------------------------------------------------------------------------------------
+
+### The distribution of Occupation Types in City of Melbourne and CBD
+
+```{r ocp}
+ocp_com_cbd<-ocp %>%
+  filter(geography %in% c("City of Melbourne", "Melbourne (CBD)"), year == "2016") %>%
+  ggplot(aes(x = reorder(Occupation, value), y = value, fill = geography)) +
+  geom_bar(position = 'dodge', stat='identity') +
+  coord_flip() +
+  labs(x = "Occupation type", y = "Persons", fill = "Regions") +
+  scale_fill_brewer(palette = "Dark2") 
+
+  
+ggplotly(ocp_com_cbd)
+
+
+
+```
+
+Income
+======================================
+
+Column {data-width=300}
+---------------------------------------
+
+### **Summary**  
+
+* Finally, let's glimpse the median income in the each suburbs in the City of Melbourne between 2011 and 2016. Which suburbs have the highest median income in 2016, is the central business district? Compared with 2011, which regions have increased their median income and which have declined? For answering these questions, we build a scatter plot to distinguish the median income between surbubrs and year.  
+
+* From this figure, we observed that there were four regions with the regression of median income, and one of them was Melbourne CBD, the other three were Carlton, Southbank and North Melbourne. Melbourne CBD's median income is not as good as we think, and it is not outstanding compared with other regions. In 2016, the highest median income was $East Melbourne$, with Australian dollars 1322 per week and the lowest median was $Carlton$, with Australian dollars 355 per week.
+
+
+
+Column {data-width=600}
+---------------------------------------
+### Median Income
+
+```{r median_income}
+eco_plot<-eco %>%
+  filter(geography %in% c (COM)) %>%
+  ggplot(aes(x = median_income, y = geography, fill = factor(year))) +
+  geom_point(size = 3) +
+  labs(y = "Suburbs", x = "Median income", title = "Median income across the City of Melbourne", fill = "Year") 
+
+ggplotly(eco_plot)
+
+```
+
+model {.hidden}
+================================
+In the final part of this projetc, we would like to focus on personal income and create a model to measure the correlation between income and occupation type, education level and year among the factors of geography, year, rental payment mean, education level, median income, age median and occupation type .  
+
+### Calculating weighted aruthmetri mean  
+
+* In the raw data about rental payment is a range value, which is difficulty to use in the model. For this reason, we would like to calculate the weighted arithmetic mean of rental payment in each suburbs. The weight we use is the persons in each rental payment range in particular suburb.  
+
+* The plot shows that the Docklands is the suburb with the highest mean of rental payment but it had slightly decreased in 2016 while other suburbs indicate increase trend compared with 2011.
+```{r rent_weighted_mean}
+rent_model<- rent %>%
+  separate(col = rental_payment,
+           into = c("lower", "upper")) %>% # Separate range into other two columns
+  mutate(lower = as.numeric(lower),
+         upper = as.numeric(upper)) %>% rowwise() %>%
+  mutate(mid = median(c(lower,upper), na.rm = TRUE)) %>% # Calculate the half point of each range
+  select(geography, year, value, mid) %>%
+  group_by(geography,year) %>% 
+  mutate(weighted_rent = weighted.mean(mid,value)) %>% # Then, according to the suburbs and year, calculate the weighted mean for rent
+  select(geography,weighted_rent,year) %>%
+  unique() 
+rentp1<- rent_model %>%
+  ggplot(aes(x = weighted_rent, y = reorder(geography, weighted_rent), fill = factor(year))) +
+  geom_col(position = "dodge") + 
+  scale_fill_brewer(name = "Census year",palette="Dark2")
+ggplotly(rentp1)
+```
+### Join data  
+* In this chunk, we join the data which have been tidied previously for using in model.
+
+```{r model_data}
+mel_model_data<- age_median %>%
+  left_join(eco, by = c("year", "geography")) %>%
+  left_join(ocp_model, by = c("year", "geography")) %>%
+  left_join(edu_level, by = c("year", "geography")) %>%
+  left_join((rent_model), by = c("year","geography")) %>%
+  filter(geography %in% c(COM)) %>%
+  mutate(log_income = log1p(median_income)) 
+
+vnam <- paste(names(mel_model_data), sep="") # extract variable name for paste in the next chunk.
+xnam<- paste0(vnam, collapse= "+")
+  
+```
+### Modeling  
+* In following chunk, we add the variable we intersted in to the formula and creat a liner model.
+
+```{r lm_income}
+mel_lm <- lm (
+  formula = log_income ~ year+Labourers+Managers+Professionals+Technicians_and_trades_workers+Community_and_personal_service_workers+Clerical_and_administrative_workers+Sales_workers+Machinery_operators_and_drivers+Postgraduate_Degree_Level+Graduate_Diploma_and_Graduate_Certificate_Level+Bachelor_Degree_Level+Advanced_Diploma_and_Diploma_Level+Certificate_Level+weighted_rent,
+  data = mel_model_data)
+glance(mel_lm)
+
+```
+### Evaluating the model
+
+```{r aug}
+mel_aug_lm <- augment(mel_lm, data = mel_model_data)
+ggplot(mel_aug_lm,aes(x = log_income,
+                      y = .fitted)) +
+geom_point()
+
+```
+
+### **Summary for model part**  
+
+* In part 'Modeling', we can see that the r.squared of this model is 0.97, even was adjusted, adj.r.squared is 0.87. This means that the 0.97 change of the median income can be attributed to the change of occupation type, education level and year. It looks like a great model or an amazing one. But we are not happy about this, because this model actually has severe loopholes. When we reevaluate the model, we find that the amount of our data is very small, even though the amount of raw data is very large. Because after the tidy of the raw data, the tidy data has become very small, especially for the interval values. For example, in terms of rental paymeny, there are 14 interval values to measure the renttal paymeny level, but we can't apply these interval values to the model, so we have to take the weighted average, but this value is not accurate enough, and also wastes a lot of raw data. This problem can not be solved when researchers obtain data. In order to protect personal privacy, detailed rental payment will not be asked when collecting data. So we think this is a limitation of our project, but we think this problem is also a finding of our project, so we keep part of the model. I will continue to work on how to apply interval values to the model.   
+
+
+Thank You {.hidden}
+=======================================
+
+Thank you very much for reading our project. This is our first project in data analysis, from which we also benefit a lot, but we know that this is just the beginning, so there might be many deficiencies. We sincerly hope you can point out any mistakes and deficiencies in this project, We would really appreciate.
+
+References
+=========================================
+
+### References  
+
+Residents profiles: https://www.melbourne.vic.gov.au/about-melbourne/research-and-statistics/city-population/Pages/residents-profiles.aspx  
+
+tidyverse: https://cran.r-project.org/web/packages/tidyverse/tidyverse.pdf  
+
+plotly: https://cran.r-project.org/web/packages/plotly/plotly.pdf  
+
+stringr: https://cran.r-project.org/web/packages/stringr/stringr.pdf  
+
+treemapify: https://cran.r-project.org/web/packages/treemapify/treemapify.pdf  
+
+ggthemes: https://cran.r-project.org/web/packages/ggthemes/ggthemes.pdf  
+
+extrafont: https://cran.r-project.org/web/packages/extrafont/extrafont.pdf  
+
+broom: https://cran.r-project.org/web/packages/broom/broom.pdf  
+
+readr: https://cran.r-project.org/web/packages/readr/readr.pdf  
+
+here: https://cran.r-project.org/web/packages/here/here.pdf  
+
+flexdashboard: https://cran.r-project.org/web/packages/flexdashboard/flexdashboard.pdf  
+
+knitr: https://cran.r-project.org/web/packages/knitr/knitr.pdf
+
